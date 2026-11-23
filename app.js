@@ -1,10 +1,76 @@
 'use strict';
 const $=s=>document.querySelector(s), $$=s=>[...document.querySelectorAll(s)];
-const KEY='cliplive_pwa_v1'; let data={channels:[],clips:[]};
-try{const v=JSON.parse(localStorage.getItem(KEY)||'{}'); if(Array.isArray(v.channels)&&Array.isArray(v.clips))data=v}catch{}
+const KEY='cliplive_pwa_v1'; let data={channels:[],clips:[],youtube:[]};
+try{const v=JSON.parse(localStorage.getItem(KEY)||'{}'); if(Array.isArray(v.channels)&&Array.isArray(v.clips))data={...v,youtube:parseYouTubeList(v.youtube)}}catch{}
 const save=()=>{localStorage.setItem(KEY,JSON.stringify(data));render()};
 const msg=s=>{$('#status').textContent=s;setTimeout(()=>{if($('#status').textContent===s)$('#status').textContent=''},5500)};
 const escapeHtml=s=>String(s).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+
+function parseYouTube(raw) {
+  let url;
+  try { url = new URL(raw.trim()); } catch { throw Error('Introduce un enlace válido de YouTube'); }
+  const host = url.hostname.replace(/^www\./, '');
+  if (url.protocol !== 'https:' || url.username || url.password || url.port ||
+      !['youtube.com', 'm.youtube.com', 'youtu.be'].includes(host)) {
+    throw Error('Usa un enlace HTTPS de YouTube');
+  }
+  const parts = url.pathname.split('/').filter(Boolean);
+  const [route, value] = parts;
+  if (host !== 'youtu.be' && parts.length === 2 && route.startsWith('@') &&
+      route.length > 1 && value === 'live') {
+    const href = 'https://www.youtube.com/' + route + '/live';
+    return { key: href, url: href, label: 'Directo de ' + route };
+  }
+  const shortLink = host === 'youtu.be' && parts.length === 1;
+  const watchLink = host !== 'youtu.be' && route === 'watch' && parts.length === 1;
+  const pathLink = host !== 'youtu.be' && ['live', 'shorts'].includes(route) && parts.length === 2;
+  const id = shortLink ? route : watchLink ? url.searchParams.get('v') : pathLink ? value : '';
+  if (!id || !/^[A-Za-z0-9_-]{11}$/.test(id)) {
+    throw Error('Pega el enlace de un video, Short o directo de YouTube');
+  }
+  const target = new URL(pathLink ? 'https://www.youtube.com/' + route + '/' + id : 'https://www.youtube.com/watch');
+  if (!pathLink) target.searchParams.set('v', id);
+  for (const name of ['t', 'start']) {
+    if (url.searchParams.has(name)) target.searchParams.set(name, url.searchParams.get(name));
+  }
+  return { key: id, url: target.href, label: (route === 'live' ? 'Directo' : route === 'shorts' ? 'Short' : 'Video o directo') + ' · ' + id };
+}
+
+function parseYouTubeList(entries) {
+  const links = new Map();
+  for (const entry of Array.isArray(entries) ? entries : []) {
+    if (typeof entry?.url !== 'string') continue;
+    try {
+      const link = parseYouTube(entry.url);
+      if (!links.has(link.key)) links.set(link.key, link);
+    } catch {}
+  }
+  return [...links.values()];
+}
+
+$('#youtubeForm').addEventListener('submit', event => {
+  event.preventDefault();
+  const input = $('#youtubeUrl');
+  try {
+    const link = parseYouTube(input.value);
+    if (data.youtube.some(item => item.key === link.key)) {
+      msg('Ese enlace ya está guardado');
+      return;
+    }
+    data.youtube.push(link);
+    save();
+    input.value = '';
+    msg('Enlace de YouTube guardado');
+  } catch (error) { msg(error.message); }
+});
+
+$('#youtubeList').addEventListener('click', event => {
+  const button = event.target.closest('[data-remove-youtube]');
+  if (button) {
+    data.youtube = data.youtube.filter(link => link.key !== button.dataset.removeYoutube);
+    save();
+  }
+});
 function parseChannel(raw){let u;try{u=new URL(raw.trim())}catch{throw Error('Introduce un enlace válido')};if(u.protocol!=='https:')throw Error('Usa enlaces HTTPS');let h=u.hostname.toLowerCase().replace(/^www\./,'');let parts=u.pathname.split('/').filter(Boolean);let platform,name;
 if(h==='twitch.tv'||h==='m.twitch.tv'){platform='Twitch';name=parts[0]}
 else if(h==='kick.com'){platform='Kick';name=parts[0]}
@@ -14,7 +80,11 @@ if(!name||['videos','watch','shorts','live','clip','clips','directory'].includes
 return {url:u.origin+u.pathname.replace(/\/$/,''),platform,name};}
 $('#addForm').addEventListener('submit',e=>{e.preventDefault();try{const c=parseChannel($('#channelUrl').value);if(data.channels.some(x=>x.url===c.url)){msg('Ese canal ya está guardado');return}data.channels.push({...c,id:crypto.randomUUID?.()||String(Date.now()),added:Date.now()});$('#channelUrl').value='';save();msg('Canal guardado')}catch(err){msg(err.message)}});
 $('#filter').addEventListener('input',render);
-function render(){let q=$('#filter').value.toLowerCase();let channels=data.channels.filter(c=>(c.name+' '+c.platform).toLowerCase().includes(q));$('#count').textContent=data.channels.length;$('#channelList').innerHTML=channels.length?channels.map(c=>`<div class="item"><strong>${escapeHtml(c.name)}</strong> <span class="pill">${c.platform}</span><p class="muted">Estado en vivo: no verificado</p><p><a href="${escapeHtml(c.url)}" target="_blank" rel="noopener noreferrer">Abrir canal</a></p><button data-remove="${escapeHtml(c.id)}">Eliminar</button></div>`).join(''):'<p class="muted">Todavía no hay canales guardados.</p>';
+function render(){
+$('#youtubeList').innerHTML = data.youtube.length ? data.youtube.map(link =>
+  `<div class="item"><strong>${escapeHtml(link.label)}</strong><p><a href="${escapeHtml(link.url)}" target="_blank" rel="noopener noreferrer">Abrir en YouTube</a></p><button data-remove-youtube="${escapeHtml(link.key)}">Quitar</button></div>`
+).join('') : '<p class="muted">Todavía no hay enlaces de YouTube guardados.</p>';
+let q=$('#filter').value.toLowerCase();let channels=data.channels.filter(c=>(c.name+' '+c.platform).toLowerCase().includes(q));$('#count').textContent=data.channels.length;$('#channelList').innerHTML=channels.length?channels.map(c=>`<div class="item"><strong>${escapeHtml(c.name)}</strong> <span class="pill">${c.platform}</span><p class="muted">Estado en vivo: no verificado</p><p><a href="${escapeHtml(c.url)}" target="_blank" rel="noopener noreferrer">Abrir canal</a></p><button data-remove="${escapeHtml(c.id)}">Eliminar</button></div>`).join(''):'<p class="muted">Todavía no hay canales guardados.</p>';
 $('#approved').innerHTML=data.clips.length?data.clips.map((c,i)=>`<div class="item"><strong>${escapeHtml(c.file)}</strong> <span class="pill">${c.duration}s</span><p>Desde ${format(c.start)} hasta ${format(c.end)}</p><p class="muted">Puntuación orientativa: ${c.score}/100</p><button data-deleteclip="${i}">Quitar</button></div>`).join(''):'<p class="muted">No hay clips aprobados.</p>'}
 $('#channelList').addEventListener('click',e=>{let b=e.target.closest('[data-remove]');if(b&&confirm('¿Eliminar este canal?')){data.channels=data.channels.filter(x=>x.id!==b.dataset.remove);save()}});
 $('#approved').addEventListener('click',e=>{let b=e.target.closest('[data-deleteclip]');if(b){data.clips.splice(Number(b.dataset.deleteclip),1);save()}});
@@ -31,7 +101,7 @@ function renderCandidates(){$('#suggestions').innerHTML=candidates.length?candid
 $('#suggestions').addEventListener('click',e=>{let b=e.target.closest('button');if(!b)return;let i=Number(b.dataset.preview??b.dataset.approve);let c=candidates[i];if(!c)return;if(b.hasAttribute('data-preview')){$('#player').currentTime=c.start;$('#player').play().catch(()=>{})}else{data.clips.push({file:videoFile.name,start:c.start,end:c.end,duration:Math.round(c.end-c.start),score:c.score,created:Date.now()});save();msg('Marca aprobada y guardada. La exportación de video todavía no está disponible.')}});
 $('#backup').addEventListener('click',()=>download('cliplive-datos.json',new Blob([JSON.stringify(data,null,2)],{type:'application/json'})));
 function download(name,blob){let a=document.createElement('a');a.href=URL.createObjectURL(blob);a.download=name;a.click();setTimeout(()=>URL.revokeObjectURL(a.href),10000)}
-$('#restoreBtn').addEventListener('click',()=>$('#restore').click());$('#restore').addEventListener('change',async()=>{try{let v=JSON.parse(await $('#restore').files[0].text());if(!Array.isArray(v.channels)||!Array.isArray(v.clips))throw Error('Formato inválido');if(!confirm('¿Reemplazar tus datos locales con esta copia?'))return;data={channels:v.channels.filter(c=>c&&typeof c.url==='string'&&typeof c.id==='string'&&typeof c.name==='string'&&['Twitch','Kick','YouTube'].includes(c.platform)).map(c=>({...c,url:parseChannel(c.url).url})),clips:v.clips.filter(c=>c&&typeof c.file==='string'&&Number.isFinite(c.start)&&Number.isFinite(c.end)&&Number.isFinite(c.score))};save();msg('Datos importados')}catch(e){msg('No se pudo importar: '+e.message)}});
+$('#restoreBtn').addEventListener('click',()=>$('#restore').click());$('#restore').addEventListener('change',async()=>{try{let v=JSON.parse(await $('#restore').files[0].text());if(!Array.isArray(v.channels)||!Array.isArray(v.clips))throw Error('Formato inválido');if(!confirm('¿Reemplazar tus datos locales con esta copia?'))return;data={channels:v.channels.filter(c=>c&&typeof c.url==='string'&&typeof c.id==='string'&&typeof c.name==='string'&&['Twitch','Kick','YouTube'].includes(c.platform)).map(c=>({...c,url:parseChannel(c.url).url})),youtube:parseYouTubeList(v.youtube),clips:v.clips.filter(c=>c&&typeof c.file==='string'&&Number.isFinite(c.start)&&Number.isFinite(c.end)&&Number.isFinite(c.score))};save();msg('Datos importados')}catch(e){msg('No se pudo importar: '+e.message)}});
 let deferredPrompt;window.addEventListener('beforeinstallprompt',e=>{e.preventDefault();deferredPrompt=e;$('#install').classList.remove('hidden')});$('#install').addEventListener('click',async()=>{if(deferredPrompt){deferredPrompt.prompt();await deferredPrompt.userChoice;deferredPrompt=null;$('#install').classList.add('hidden')}});
 if('serviceWorker'in navigator && (location.protocol==='https:'||location.hostname==='localhost'))navigator.serviceWorker.register('./sw.js').catch(()=>{});
 render();
